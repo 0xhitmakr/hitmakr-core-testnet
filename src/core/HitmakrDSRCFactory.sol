@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
-import {ECDSA} from "openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "../interfaces/accesscontrol/IHitmakrControlCenter.sol";
 import "../interfaces/core/IHitmakrCreativeID.sol";
 import "./HitmakrDSRC.sol";
@@ -11,71 +12,87 @@ import "../utils/DSRCSignatureUtils.sol";
 /**
  * @title HitmakrDSRCFactory
  * @author Hitmakr Protocol
- * @notice Factory contract for creating and managing Decentralized Standard Recording Code (DSRC) contracts
- * @dev Handles the creation, tracking, and validation of DSRC contracts with signature-based deployment
+ * @notice This contract is a factory for creating HitmakrDSRC contracts.
+ * @dev This factory manages the creation and registration of new DSRCs (Decentralized Standard Recording Codes). It uses ECDSA for signature verification, AccessControl for authorization, and enforces uniqueness of DSRC IDs.  It also tracks DSRC creation counts per creator per year.
  */
-contract HitmakrDSRCFactory {
+contract HitmakrDSRCFactory is AccessControl {
     using DSRCSignatureUtils for DSRCSignatureUtils.DSRCParams;
 
-    /**
-     * @dev Custom errors for better gas efficiency and clearer error handling
-     */
-    error Unauthorized();      // Caller doesn't have required permissions
-    error DSRCExists();        // DSRC with given ID already exists
-    error InvalidParams();     // Invalid parameters provided
-    error CountExceeded();     // Exceeded maximum DSRCs per year
-    error NoCreativeID();      // Creator doesn't have a Creative ID
-    error InvalidYear();       // Invalid year parameter
-    error ZeroAddress();       // Zero address provided for critical parameter
+    /// @notice Error when the caller is not authorized
+    error Unauthorized();
+    /// @notice Error when attempting to create a DSRC with an ID that already exists
+    error DSRCExists();
+    /// @notice Error when invalid parameters are provided
+    error InvalidParams();
+    /// @notice Error when the maximum DSRC count per year is exceeded for a creator
+    error CountExceeded();
+    /// @notice Error when attempting to create a DSRC for a creator without a Creative ID
+    error NoCreativeID();
+    /// @notice Error when an invalid year value is used
+    error InvalidYear();
+    /// @notice Error when a zero address is passed as parameter
+    error ZeroAddress();
 
-    /**
-     * @dev Events emitted by the contract
-     */
+
+    /// @notice Event emitted when a new DSRC is created
     event DSRCCreated(string dsrcId, address dsrcAddress, address creator, string selectedChain);
-    event YearInitialized(address indexed creator, uint16 indexed year);
+    /// @notice Event emitted when a new year is initialized for a creator's DSRC count
+    event YearInitialized(address indexed creator, uint64 indexed year);
 
-    /**
-     * @dev Constants used throughout the contract
-     */
-    uint32 private constant MAX_COUNT_PER_YEAR = 99999;     // Maximum DSRCs per creator per year
+    /// @notice Role for factory administrators
+    bytes32 public constant FACTORY_ADMIN_ROLE = keccak256("FACTORY_ADMIN_ROLE");
+    /// @notice Maximum number of DSRCs a creator can mint per year
+    uint32 private constant MAX_COUNT_PER_YEAR = 99999;
+    /// @notice Name of the contract
     string private constant CONTRACT_NAME = "HitmakrDSRCFactory";
+    /// @notice Version of the contract
     string private constant CONTRACT_VERSION = "1.0.0";
-    uint256 private constant YEAR_IN_SECONDS = 31536000;    // Number of seconds in a year
+    /// @notice Number of seconds in a year (used for calculating year-based counts)
+    uint256 private constant YEAR_IN_SECONDS = 31536000;
+
+    /// @notice Address of the USDC ERC20 token used for DSRC purchases
+    address private immutable USDC;
+    /// @notice The HitmakrControlCenter contract for access control
+    IHitmakrControlCenter public immutable controlCenter;
+    /// @notice The HitmakrCreativeID contract for managing Creative IDs
+    IHitmakrCreativeID public immutable creativeID;
+    /// @notice The address of the purchase indexer contract
+    address public immutable purchaseIndexer;
+
+    /// @notice Mapping from DSRC ID hash to DSRC contract address
+    mapping(bytes32 => address) public dsrcs;
+    /// @notice Mapping from creator address to their current nonce (used for signature verification)
+    mapping(address => uint256) public nonces;                   
+    /// @notice Mapping from creator address to year to DSRC count for that year
+    mapping(address => mapping(uint64 => uint32)) public yearCounts;
+    /// @notice Mapping from chain ID hash to DSRC ID hash to DSRC contract address
+    mapping(bytes32 => mapping(bytes32 => address)) public chainDsrcs;
+    /// @notice Mapping to indicate validity of DSRCs by their address.
+    mapping(address => bool) public isValidDSRC;
+
 
     /**
-     * @dev Immutable state variables
-     */
-    address private immutable USDC;                         // USDC token contract address
-    IHitmakrControlCenter public immutable controlCenter;   // Control center contract
-    IHitmakrCreativeID public immutable creativeID;        // Creative ID contract
-    address public immutable purchaseIndexer;               // Purchase indexer contract address
-
-    /**
-     * @dev Storage mappings for tracking DSRCs and related data
-     */
-    mapping(bytes32 => address) public dsrcs;              // DSRC ID hash to contract address
-    mapping(address => uint256) private _nonces;           // Creator address to nonce
-    mapping(address => mapping(uint16 => uint32)) private _yearCounts;  // Creator yearly DSRC counts
-    mapping(bytes32 => mapping(bytes32 => address)) public chainDsrcs;  // Chain-specific DSRC tracking
-    mapping(address => bool) public isValidDSRC;           // Valid DSRC contract addresses
-
-    /**
-     * @dev Struct for organizing deployment parameters
+     * @notice Structure for parameters used in DSRC deployment.
+     * @param dsrcId The generated DSRC ID.
+     * @param dsrcIdHash The keccak256 hash of the DSRC ID.
+     * @param chainHash The keccak256 hash of the selected chain.
+     * @param creator The address of the DSRC creator.
+     * @param percentages The array of royalty percentages for the DSRC.
      */
     struct DeploymentParams {
-        string dsrcId;         // Unique identifier for the DSRC
-        bytes32 dsrcIdHash;    // Hash of the DSRC ID
-        bytes32 chainHash;     // Hash of the selected chain
-        address creator;       // Address of the DSRC creator
-        uint16[] percentages;  // Revenue split percentages
+        string dsrcId;
+        bytes32 dsrcIdHash;
+        bytes32 chainHash;
+        address creator;
+        uint16[] percentages;
     }
 
     /**
-     * @notice Contract constructor
-     * @param _controlCenter Address of the control center contract
-     * @param _creativeID Address of the creative ID contract
-     * @param _usdc Address of the USDC token contract
-     * @param _indexer Address of the purchase indexer contract
+     * @notice Constructor initializes the factory with necessary contract addresses.
+     * @param _controlCenter The address of the HitmakrControlCenter contract.
+     * @param _creativeID The address of the HitmakrCreativeID contract.
+     * @param _usdc The address of the USDC ERC20 token.
+     * @param _indexer The address of the DSRCPurchaseIndexer contract.
      */
     constructor(
         address _controlCenter,
@@ -91,29 +108,36 @@ contract HitmakrDSRCFactory {
         creativeID = IHitmakrCreativeID(_creativeID);
         USDC = _usdc;
         purchaseIndexer = _indexer;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(FACTORY_ADMIN_ROLE, msg.sender);
     }
 
     /**
-     * @notice Creates a new DSRC contract
-     * @dev Only authorized verifiers can call this function
-     * @param params DSRC creation parameters
-     * @param signature Creator's signature authorizing the deployment
+     * @notice Creates a new HitmakrDSRC contract.
+     * @param params Struct containing the parameters for DSRC creation.  See `DSRCSignatureUtils.DSRCParams`.
+     * @param signature The signature of the creator, verifying the parameters.
+     * @dev Only callable by factory admins or verifiers from the `controlCenter`.
+     *      Reverts if parameters are invalid, the DSRC already exists, or other checks fail. 
+     *      Emits a `DSRCCreated` event upon successful deployment.
      */
     function createDSRC(
         DSRCSignatureUtils.DSRCParams calldata params,
         bytes calldata signature
     ) external {
-        if (!controlCenter.isVerifier(msg.sender)) revert Unauthorized();
+        if (!hasRole(FACTORY_ADMIN_ROLE, msg.sender) && 
+            !IAccessControl(address(controlCenter)).hasRole(controlCenter.VERIFIER_ROLE(), msg.sender)) 
+            revert Unauthorized();
         
         DeploymentParams memory deployParams = _prepareDeployment(params, signature);
         _deployAndRegister(deployParams, params);
     }
 
     /**
-     * @dev Prepares deployment parameters and validates the request
-     * @param params DSRC creation parameters
-     * @param signature Creator's signature
-     * @return deployParams Structured deployment parameters
+     * @dev Internal function to prepare deployment parameters and validate inputs.
+     * @param params The DSRC creation parameters.
+     * @param signature The creator's signature.
+     * @return deployParams A struct containing the validated and prepared deployment parameters.
      */
     function _prepareDeployment(
         DSRCSignatureUtils.DSRCParams calldata params,
@@ -126,7 +150,7 @@ contract HitmakrDSRCFactory {
             CONTRACT_VERSION,
             address(this)
         );
-        if (params.nonce != _nonces[creator]) revert InvalidParams();
+        if (params.nonce != nonces[creator]) revert InvalidParams();
 
         string memory dsrcId = generateDSRCId(creator);
         bytes32 dsrcIdHash = keccak256(bytes(dsrcId));
@@ -148,9 +172,9 @@ contract HitmakrDSRCFactory {
     }
 
     /**
-     * @dev Converts uint256 percentages to uint16
-     * @param originalPercentages Array of original percentages
-     * @return Array of converted uint16 percentages
+     * @dev Converts an array of uint256 percentages to uint16 percentages.
+     * @param originalPercentages The original array of uint256 percentages.
+     * @return An array of uint16 percentages.
      */
     function _convertPercentages(uint256[] memory originalPercentages) 
         internal 
@@ -166,9 +190,9 @@ contract HitmakrDSRCFactory {
     }
 
     /**
-     * @dev Deploys and registers a new DSRC contract
-     * @param deployParams Structured deployment parameters
-     * @param params Original DSRC creation parameters
+     * @dev Internal function to deploy a new HitmakrDSRC contract and register it.
+     * @param deployParams The prepared deployment parameters.
+     * @param params The original DSRC creation parameters.
      */
     function _deployAndRegister(
         DeploymentParams memory deployParams,
@@ -192,7 +216,7 @@ contract HitmakrDSRCFactory {
         isValidDSRC[dsrcAddress] = true;
         
         unchecked {
-            ++_nonces[deployParams.creator];
+            ++nonces[deployParams.creator];
         }
 
         emit DSRCCreated(
@@ -204,27 +228,27 @@ contract HitmakrDSRCFactory {
     }
 
     /**
-     * @notice Generates a unique DSRC ID for a creator
-     * @dev Format: creativeID + yearLastTwo + count(padded to 5 digits)
-     * @param creator Address of the DSRC creator
-     * @return Unique DSRC identifier string
+     * @notice Generates a unique DSRC ID for the creator.
+     * @param creator The address of the DSRC creator.
+     * @return The generated DSRC ID string.
+     * @dev Uses the creator's Creative ID, the last two digits of the current year, and a sequential count.
      */
     function generateDSRCId(address creator) internal returns (string memory) {
         (string memory userCreativeId, , bool exists) = creativeID.getCreativeID(creator);
         if (!exists) revert NoCreativeID();
         
-        uint16 yearLastTwo;
+        uint64 yearLastTwo;
         unchecked {
-            yearLastTwo = uint16((block.timestamp / YEAR_IN_SECONDS + 1970) % 100);
+            yearLastTwo = uint64((block.timestamp / YEAR_IN_SECONDS + 1970) % 100);
         }
 
         uint32 newCount;
         unchecked {
-            newCount = _yearCounts[creator][yearLastTwo] + 1;
+            newCount = yearCounts[creator][yearLastTwo] + 1;
         }
         if (newCount > MAX_COUNT_PER_YEAR) revert CountExceeded();
         
-        _yearCounts[creator][yearLastTwo] = newCount;
+        yearCounts[creator][yearLastTwo] = newCount;
 
         return string(abi.encodePacked(
             userCreativeId,
@@ -234,10 +258,10 @@ contract HitmakrDSRCFactory {
     }
 
     /**
-     * @dev Formats a number with leading zeros
-     * @param number Number to format
-     * @param digits Number of digits to pad to
-     * @return Formatted string
+     * @dev Internal helper function to format a number with leading zeros.
+     * @param number The number to format.
+     * @param digits The desired number of digits in the output string.
+     * @return The formatted number as a string.
      */
     function _formatNumber(uint256 number, uint256 digits) internal pure returns (string memory) {
         bytes memory numbers = "0123456789";
@@ -252,55 +276,5 @@ contract HitmakrDSRCFactory {
         }
         
         return string(buffer);
-    }
-
-    /**
-     * @notice Gets DSRC address by chain and DSRC ID
-     * @param chain Chain identifier
-     * @param dsrcId DSRC identifier
-     * @return DSRC contract address
-     */
-    function getDSRCByChain(string calldata chain, string calldata dsrcId) 
-        external 
-        view 
-        returns (address) 
-    {
-        return chainDsrcs[keccak256(bytes(chain))][keccak256(bytes(dsrcId))];
-    }
-
-    /**
-     * @notice Gets the current nonce for a creator
-     * @param creator Creator address
-     * @return Current nonce
-     */
-    function getNonce(address creator) external view returns (uint256) {
-        return _nonces[creator];
-    }
-
-    /**
-     * @notice Gets the current year count for a creator
-     * @param creator Creator address
-     * @return year Current year (last two digits)
-     * @return count Number of DSRCs created this year
-     */
-    function getCurrentYearCount(address creator) 
-        external 
-        view 
-        returns (uint16 year, uint32 count) 
-    {
-        unchecked {
-            year = uint16((block.timestamp / YEAR_IN_SECONDS + 1970) % 100);
-        }
-        count = _yearCounts[creator][year];
-    }
-
-    /**
-     * @notice Gets the DSRC count for a specific year
-     * @param creator Creator address
-     * @param year Year to query (last two digits)
-     * @return Number of DSRCs created in that year
-     */
-    function getYearCount(address creator, uint16 year) external view returns (uint32) {
-        return _yearCounts[creator][year];
     }
 }

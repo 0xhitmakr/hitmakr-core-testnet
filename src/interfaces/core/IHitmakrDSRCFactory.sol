@@ -6,21 +6,11 @@ import "../../utils/DSRCSignatureUtils.sol";
 /**
  * @title IHitmakrDSRCFactory
  * @author Hitmakr Protocol
- * @notice This interface defines the functions and events for the `HitmakrDSRCFactory` contract.
- * The factory is responsible for creating and managing DSRC (Decentralized Standard Recording Code) contracts.
- * It handles the deployment of new DSRCs, tracks DSRC creation metrics, and provides functions for retrieving
- * DSRC addresses and other relevant information.  The factory uses signatures to authorize DSRC creation
- * and integrates with other Hitmakr contracts like `HitmakrControlCenter` and `HitmakrCreativeID`.
+ * @notice Interface for the DSRC Factory contract that manages DSRC creation and tracking
  */
 interface IHitmakrDSRCFactory {
     /**
-     * @notice Struct to hold the parameters required for deploying a new DSRC contract.
-     * @member dsrcId The string identifier of the DSRC.
-     * @member dsrcIdHash The Keccak256 hash of the `dsrcId`.
-     * @member chainHash The Keccak256 hash of the blockchain name where the DSRC will be deployed.
-     * @member creator The address of the user creating the DSRC.
-     * @member percentages An array of uint16 values representing the percentage royalties/splits for recipients (in basis points).
-     * @dev Used as input for the `createDSRC` function.
+     * @dev Struct to hold deployment parameters
      */
     struct DeploymentParams {
         string dsrcId;
@@ -31,22 +21,17 @@ interface IHitmakrDSRCFactory {
     }
 
     /**
-     * @notice Struct to track yearly DSRC creation metrics for each creator.
-     * @member count The number of DSRCs created by a user in the current year.
-     * @member lastYearCount The number of DSRCs created by a user in the previous year.
-     * @member lastUpdate The timestamp of the last update to the metrics.
-     * @member initialized A boolean indicating whether the metrics have been initialized for a user.
+     * @dev Struct to track yearly DSRC creation metrics
      */
     struct YearlyMetrics {
-        uint32 count;
-        uint32 lastYearCount;
-        uint40 lastUpdate;
-        bool initialized;
+        uint32 count;          // Current year count
+        uint32 lastYearCount;  // Previous year count
+        uint40 lastUpdate;     // Last update timestamp
+        bool initialized;      // Whether metrics are initialized
     }
 
-
-    /*
-     * Custom errors for gas-efficient error handling and specific revert reasons.
+    /**
+     * @dev Custom errors
      */
     error Unauthorized();
     error DSRCExists();
@@ -58,18 +43,8 @@ interface IHitmakrDSRCFactory {
     error InvalidSignature();
     error SignatureExpired();
 
-
-    /*
-     * Events emitted by the factory contract. These events provide a record of DSRC creations and metric updates,
-     * which are useful for off-chain monitoring and analysis.  Indexed parameters enable efficient event filtering.
-     */
-
     /**
-     * @notice Emitted when a new DSRC contract is created.
-     * @param dsrcId The string identifier of the newly created DSRC.
-     * @param dsrcAddress The address of the newly deployed DSRC contract.
-     * @param creator The address of the user who created the DSRC.
-     * @param selectedChain The name of the blockchain where the DSRC was deployed.
+     * @dev Events
      */
     event DSRCCreated(
         string indexed dsrcId,
@@ -78,30 +53,16 @@ interface IHitmakrDSRCFactory {
         string selectedChain
     );
     
-
-    /**
-     * @notice Emitted when yearly DSRC creation metrics are updated for a creator.
-     * @param creator The address of the creator whose metrics were updated.
-     * @param count The updated DSRC count for the current year.
-     * @param year The year for which the metrics were updated.
-     */
     event YearlyMetricsUpdated(
         address indexed creator,
         uint32 count,
         uint16 indexed year
     );
 
-
-
     /**
-     * @notice Creates a new DSRC contract. This function is called by a verifier on behalf of a user after verifying
-     * the user's signature.
-     * @param params The DSRC parameters, including token URI, price, recipients, percentages, nonce, deadline, and
-     * selected chain. See `DSRCSignatureUtils.DSRCParams` for details.
-     * @param signature The user's signature, authorizing the DSRC creation. This signature is verified using the
-     * `DSRCSignatureUtils` library.
-     * @dev Emits a `DSRCCreated` event upon successful DSRC creation.  Reverts if the DSRC already exists, parameters
-     * are invalid, the user has exceeded their yearly DSRC creation limit, or the signature is invalid.
+     * @notice Creates a new DSRC contract
+     * @param params The parameters for DSRC creation
+     * @param signature The creator's signature
      */
     function createDSRC(
         DSRCSignatureUtils.DSRCParams calldata params,
@@ -109,10 +70,10 @@ interface IHitmakrDSRCFactory {
     ) external;
 
     /**
-     * @notice Retrieves the address of a deployed DSRC contract by its blockchain name and ID.
-     * @param chain The name of the blockchain where the DSRC is deployed.
-     * @param dsrcId The string identifier of the DSRC.
-     * @return The address of the DSRC contract, or the zero address if no such DSRC exists.
+     * @notice Gets DSRC address by chain and ID
+     * @param chain The blockchain name
+     * @param dsrcId The DSRC identifier
+     * @return The DSRC contract address
      */
     function getDSRCByChain(
         string calldata chain,
@@ -120,20 +81,19 @@ interface IHitmakrDSRCFactory {
     ) external view returns (address);
 
     /**
-     * @notice Retrieves the current nonce for a given creator address. Nonces are used to prevent replay attacks
-     * in the signature verification process.
-     * @param creator The address of the creator.
-     * @return The current nonce for the creator.
+     * @notice Gets the current nonce for a creator
+     * @param creator The creator's address
+     * @return The current nonce
      */
     function getNonce(address creator) external view returns (uint256);
 
     /**
-     * @notice Retrieves the yearly DSRC creation metrics for a given creator address.
-     * @param creator The address of the creator.
-     * @return currentCount The current year's DSRC count for the creator.
-     * @return lastYearCount The previous year's DSRC count for the creator.
-     * @return lastUpdate The timestamp of the last metrics update for the creator.
-     * @return initialized A boolean indicating whether the metrics have been initialized for the creator.
+     * @notice Gets yearly metrics for a creator
+     * @param creator The creator's address
+     * @return currentCount Current year's DSRC count
+     * @return lastYearCount Previous year's DSRC count
+     * @return lastUpdate Last update timestamp
+     * @return initialized Whether metrics are initialized
      */
     function getYearlyMetrics(
         address creator
@@ -144,70 +104,61 @@ interface IHitmakrDSRCFactory {
         bool initialized
     );
 
-
     /**
-     * @notice Returns the name of the factory contract. Primarily used for EIP-712 signature verification.
-     * @return The name string.
+     * @notice Gets the factory contract name
+     * @return The name of the factory contract
      */
     function name() external view returns (string memory);
 
     /**
-     * @notice Returns the version of the factory contract. Used for EIP-712 signature verification.
-     * @return The version string.
+     * @notice Gets the factory contract version
+     * @return The version of the factory contract
      */
     function version() external view returns (string memory);
 
-
     /**
-     * @notice Returns the address of the USDC token contract.  This is likely used for payments related to DSRC creation.
-     * @return The address of the USDC contract.
+     * @notice Gets the USDC token address
+     * @return The address of the USDC token contract
      */
     function USDC() external view returns (address);
 
-
     /**
-     * @notice Returns the address of the `HitmakrControlCenter` contract.  Used for access control and authorization.
-     * @return The address of the control center contract.
+     * @notice Gets the control center contract
+     * @return The address of the control center contract
      */
     function controlCenter() external view returns (address);
 
-
     /**
-     * @notice Returns the address of the `HitmakrCreativeID` contract. Used for managing Creative IDs associated with creators.
-     * @return The address of the Creative ID contract.
+     * @notice Gets the creative ID contract
+     * @return The address of the creative ID contract
      */
     function creativeID() external view returns (address);
 
-
     /**
-     * @notice Returns the address of the `HitmakrDSRCPurchaseIndexer` contract. Used for tracking DSRC purchases.
-     * @return The address of the purchase indexer contract.
+     * @notice Gets the purchase indexer address
+     * @return The address of the purchase indexer contract
      */
     function purchaseIndexer() external view returns (address);
 
     /**
-     * @notice Checks if a given address is a valid DSRC contract deployed by this factory.
-     * @param dsrc The address to check.
-     * @return True if the address is a valid DSRC, false otherwise.
+     * @notice Check if an address is a valid DSRC contract
+     * @param dsrc The address to check
+     * @return True if the address is a valid DSRC contract
      */
     function isValidDSRC(address dsrc) external view returns (bool);
 
-
     /**
-     * @notice Retrieves a DSRC contract address by its ID hash.
-     * @param dsrcIdHash The Keccak256 hash of the DSRC ID.
-     * @return The address of the DSRC contract, or the zero address if no DSRC with that ID hash exists.
+     * @notice Gets a DSRC contract address by its ID hash
+     * @param dsrcIdHash The hash of the DSRC ID
+     * @return The address of the DSRC contract
      */
     function dsrcs(bytes32 dsrcIdHash) external view returns (address);
 
-
-
     /**
-     * @notice Retrieves a DSRC contract address by the hash of the chain name and the hash of the DSRC ID.
-     * This function is useful for cross-chain lookups.
-     * @param chainHash The Keccak256 hash of the blockchain name.
-     * @param dsrcIdHash The Keccak256 hash of the DSRC ID.
-     * @return The address of the DSRC contract, or the zero address if no DSRC exists for the given chain and ID.
+     * @notice Gets a DSRC contract address by chain and ID hashes
+     * @param chainHash The hash of the chain name
+     * @param dsrcIdHash The hash of the DSRC ID
+     * @return The address of the DSRC contract
      */
     function chainDsrcs(bytes32 chainHash, bytes32 dsrcIdHash) external view returns (address);
 }

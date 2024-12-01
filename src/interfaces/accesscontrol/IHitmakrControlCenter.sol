@@ -4,74 +4,72 @@ pragma solidity 0.8.20;
 /**
  * @title IHitmakrControlCenter
  * @author Hitmakr Protocol
- * @notice This interface defines the functions for interacting with the `HitmakrControlCenter` contract.
- * The control center manages the roles of administrators and verifiers within the Hitmakr ecosystem.  It provides
- * functions for assigning and revoking these roles, as well as an emergency pause mechanism.
+ * @notice Interface for the HitmakrControlCenter contract, which manages roles and emergency pausing.
+ * @dev This interface defines functions for setting admins, managing verifiers in batches, and toggling the emergency pause state of the system.
  */
 interface IHitmakrControlCenter {
-    /*
-     * Custom errors for gas-efficient error handling.  These errors provide specific information about the
-     * reason for a revert, which can be helpful for debugging and user feedback.
-     */
-    error Unauthorized();
+    /// @notice Error for invalid address parameters
     error InvalidAddress();
+    /// @notice Error for invalid batch parameters (e.g., empty array or exceeding max size)
     error InvalidBatch();
-    error AlreadyAdmin();
-    error NotAdmin();
-    error AlreadyVerifier();
-    error NotVerifier();
+    /// @notice Error for zero successful operations in batch processing
     error ZeroSuccess();
 
-    /*
-     * Events emitted by the control center.  These events provide a record of changes to admin and verifier
-     * roles, as well as emergency pause actions.  Indexed parameters allow for efficient filtering of events.
+    /**
+     * @notice Structure to hold role counts.
+     * @param verifierCount The number of verifier accounts.
+     * @param adminCount The number of admin accounts.
      */
-    event AdminUpdated(address indexed account, bool status);
-    event VerifierUpdated(address indexed account, bool status);
+    struct RoleCounter {
+        uint248 verifierCount;
+        uint8 adminCount;
+    }
+
+    /// @notice Event emitted after a batch of verifiers is processed
     event BatchVerifierProcessed(uint256 count);
+    /// @notice Event emitted when the emergency pause state is toggled
     event EmergencyAction(bool paused);
 
     /**
-     * @notice Sets or revokes the admin role for a single account.  This function can only be called by the
-     * owner of the `HitmakrControlCenter` contract.
-     * @param account The address of the account to modify.
-     * @param grant `true` to grant admin privileges, `false` to revoke them.
+     * @notice Sets the admin status of an account.
+     * @param account The address of the account.
+     * @param grant True to grant admin status, false to revoke.
      */
     function setAdmin(address account, bool grant) external;
-
+    
     /**
-     * @notice Sets or revokes the verifier role for a batch of accounts. This function is optimized for gas
-     * efficiency and can only be called by the owner of the `HitmakrControlCenter` contract.
+     * @notice Batch sets the verifier status of multiple accounts.
      * @param accounts An array of addresses to modify.
-     * @param grant `true` to grant verifier privileges, `false` to revoke them.
+     * @param grant True to grant verifier status, false to revoke.
      */
     function batchSetVerifiers(address[] calldata accounts, bool grant) external;
-
+    
     /**
-     * @notice Toggles the emergency pause state of the Hitmakr platform.  This function can only be called
-     * by the owner of the `HitmakrControlCenter` contract.  When paused, certain critical functions may be
-     * disabled to prevent further damage or exploits in case of an emergency.
+     * @notice Toggles the emergency pause state of the contract.
      */
     function toggleEmergencyPause() external;
+    
+    /**
+     * @notice Retrieves the current role counts.
+     * @return A `RoleCounter` struct containing the number of admins and verifiers.
+     */
+    function roleCounter() external view returns (RoleCounter memory);
 
     /**
-     * @notice Checks whether a given address has the admin role.
-     * @param account The address to check.
-     * @return `true` if the address has the admin role, `false` otherwise.
+     * @notice Returns the bytes32 representation of the ADMIN_ROLE.
+     * @return The ADMIN_ROLE hash.
      */
-    function isAdmin(address account) external view returns (bool);
-
+    function ADMIN_ROLE() external view returns (bytes32);
+    
     /**
-     * @notice Checks whether a given address has the verifier role.
-     * @param account The address to check.
-     * @return `true` if the address has the verifier role, `false` otherwise.
+     * @notice Returns the bytes32 representation of the VERIFIER_ROLE.
+     * @return The VERIFIER_ROLE hash.
      */
-    function isVerifier(address account) external view returns (bool);
-
+    function VERIFIER_ROLE() external view returns (bytes32);
+    
     /**
-     * @notice Retrieves the current counts of admins and verifiers.
-     * @return adminCount The number of addresses with the admin role.
-     * @return verifierCount The number of addresses with the verifier role.
+     * @notice Returns the current paused state of the contract.
+     * @return True if the contract is paused, false otherwise.
      */
-    function getRoleCounts() external view returns (uint256 adminCount, uint256 verifierCount);
+    function paused() external view returns (bool);
 }

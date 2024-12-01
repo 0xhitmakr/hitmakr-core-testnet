@@ -1,24 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "openzeppelin-contracts/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "../interfaces/accesscontrol/IHitmakrControlCenter.sol";
 import "../interfaces/core/IHitmakrProfiles.sol";
 
 /**
  * @title HitmakrVerification
  * @author Hitmakr Protocol
- * @notice This contract manages the verification status of Hitmakr profiles. Verification is a crucial step
- * for users who wish to become creatives on the platform, enabling them to upload songs and obtain a unique
- * Creative ID.  Only verified users can upload content and participate as creatives within the Hitmakr ecosystem.
- * This contract is controlled by administrators designated in the `HitmakrControlCenter`. It is designed for gas
- * efficiency and incorporates security measures like reentrancy protection and an emergency pause mechanism.
+ * @notice Manages the verification status of Hitmakr profiles.
+ * @dev This contract allows admins to verify or unverify user profiles. It integrates with `HitmakrControlCenter` for access control and `HitmakrProfiles` to check for profile existence.  It also includes an emergency pause mechanism.
  */
 contract HitmakrVerification is ReentrancyGuard, Pausable {
-    /*
-     * Custom errors for gas-efficient error handling.
-     */
+    /// @notice Custom errors for gas optimization
     error Unauthorized();
     error InvalidAddress();
     error NoProfile();
@@ -26,48 +22,36 @@ contract HitmakrVerification is ReentrancyGuard, Pausable {
     error BatchTooLarge();
     error ZeroSuccess();
 
-    /*
-     * Constant defining the maximum batch size for verification updates. This helps prevent
-     * excessively large transactions that could consume too much gas.
-     */
+    /// @notice Maximum number of accounts that can be processed in a batch
     uint256 private constant MAX_BATCH_SIZE = 100;
 
-    /*
-     * Immutable references to the `HitmakrControlCenter` and `HitmakrProfiles` contracts. These
-     * references are set during contract construction and cannot be changed afterwards.
-     */
+    /// @notice Interface for the HitmakrControlCenter contract
     IHitmakrControlCenter public immutable HITMAKR_CONTROL_CENTER;
+    /// @notice Interface for the HitmakrProfiles contract
     IHitmakrProfiles public immutable HITMAKR_PROFILES;
 
-    /*
-     * Mapping to store the verification status of each address.  `true` indicates a verified profile,
-     * `false` indicates an unverified or revoked verification.
-     */
-    mapping(address => bool) private _verificationStatus;
+    /// @notice Mapping of addresses to their verification status
+    mapping(address => bool) public verificationStatus;
 
-
-    /*
-     * Events emitted by the contract.  These events provide a record of verification updates and emergency
-     * actions, enabling off-chain monitoring and analysis.
-     */
+    /// @notice Event emitted when a user's verification status is updated
     event VerificationUpdated(address indexed user, bool status);
+    /// @notice Event emitted when a batch verification process is completed
     event BatchVerificationProcessed(uint256 count);
+    /// @notice Event emitted when the contract's pause state is changed
     event EmergencyAction(bool paused);
 
-
-    /*
-     * Modifier to restrict access to only addresses with the admin role in the `HitmakrControlCenter`.
-     */
+    /// @notice Modifier to restrict access to only admin roles from HitmakrControlCenter
     modifier onlyAdmin() {
-        if (!HITMAKR_CONTROL_CENTER.isAdmin(msg.sender)) revert Unauthorized();
+        bytes32 adminRole = HITMAKR_CONTROL_CENTER.ADMIN_ROLE();
+        if (!AccessControl(address(HITMAKR_CONTROL_CENTER)).hasRole(adminRole, msg.sender)) revert Unauthorized();
         _;
     }
 
     /**
-     * @notice Constructor initializes the contract with the addresses of the `HitmakrControlCenter` and
-     * `HitmakrProfiles` contracts.
-     * @param controlCenterAddress The address of the `HitmakrControlCenter` contract.
-     * @param profilesAddress The address of the `HitmakrProfiles` contract.
+     * @notice Constructor initializes the contract with the addresses of HitmakrControlCenter and HitmakrProfiles.
+     * @param controlCenterAddress The address of the HitmakrControlCenter contract.
+     * @param profilesAddress The address of the HitmakrProfiles contract.
+     * @dev Reverts if either address is zero.
      */
     constructor(address controlCenterAddress, address profilesAddress) {
         if (controlCenterAddress == address(0) || profilesAddress == address(0)) revert InvalidAddress();
@@ -77,71 +61,75 @@ contract HitmakrVerification is ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Sets or revokes the verification status for a single profile.  Only callable by admins.
-     * @param account The address of the profile to update.
-     * @param grant `true` to grant verification, `false` to revoke it.  Reverts if the verification status
-     * is already set to the requested value.
+     * @notice Sets the verification status for a single account.
+     * @param account The address of the account to update.
+     * @param grant True to verify the account, false to unverify.
+     * @dev Reverts if the account address is invalid, the user has no profile, or the verification status is already set to the requested value. Emits a `VerificationUpdated` event.
      */
-    function setVerification(address account, bool grant)
-        external
-        onlyAdmin
-        whenNotPaused
-        nonReentrant
+    function setVerification(
+        address account, 
+        bool grant
+    ) 
+        external 
+        onlyAdmin 
+        whenNotPaused 
+        nonReentrant 
     {
         if (account == address(0)) revert InvalidAddress();
-        if (!HITMAKR_PROFILES.hasProfile(account)) revert NoProfile();
-        if (_verificationStatus[account] == grant) revert StatusUnchanged();
+        if (!HITMAKR_PROFILES._hasProfile(account)) revert NoProfile();
+        if (verificationStatus[account] == grant) revert StatusUnchanged();
 
-        _verificationStatus[account] = grant;
+        verificationStatus[account] = grant;
         emit VerificationUpdated(account, grant);
     }
 
     /**
-     * @notice Batch updates the verification status for multiple profiles.  This function is optimized for
-     * gas efficiency. Only callable by admins.
-     * @param accounts An array of addresses to update.  The maximum batch size is defined by `MAX_BATCH_SIZE`.
-     * @param grant `true` to grant verification, `false` to revoke it.  Skips invalid addresses and addresses
-     * without profiles.
+     * @notice Batch sets the verification status for multiple accounts.
+     * @param accounts An array of addresses to update.
+     * @param grant True to verify the accounts, false to unverify.
+     * @dev Reverts if the batch size is invalid or if no accounts were successfully processed. Emits a `BatchVerificationProcessed` event with the count of successful updates. Also emits `VerificationUpdated` for each account processed.
      */
-    function batchSetVerification(address[] calldata accounts, bool grant)
-        external
-        onlyAdmin
-        whenNotPaused
-        nonReentrant
+    function batchSetVerification(
+        address[] calldata accounts,
+        bool grant
+    ) 
+        external 
+        onlyAdmin 
+        whenNotPaused 
+        nonReentrant 
     {
         uint256 len = accounts.length;
         if (len == 0 || len > MAX_BATCH_SIZE) revert BatchTooLarge();
 
         uint256 successCount;
+        bool currentStatus;
         address account;
 
         for (uint256 i; i < len;) {
             account = accounts[i];
             
-            if (account == address(0) || !HITMAKR_PROFILES.hasProfile(account)) {
-                unchecked { ++i; } // Safe unchecked increment
+            if (account == address(0) || !HITMAKR_PROFILES._hasProfile(account)) {
+                unchecked { ++i; }
                 continue;
             }
 
-            bool currentStatus = _verificationStatus[account];
-
+            currentStatus = verificationStatus[account];
             if (grant != currentStatus) {
-                _verificationStatus[account] = grant;
+                verificationStatus[account] = grant;
                 emit VerificationUpdated(account, grant);
-                unchecked { ++successCount; } // Safe unchecked increment
+                unchecked { ++successCount; }
             }
 
-            unchecked { ++i; } // Safe unchecked increment
+            unchecked { ++i; }
         }
 
         if (successCount == 0) revert ZeroSuccess();
         emit BatchVerificationProcessed(successCount);
     }
 
-
     /**
-     * @notice Enables or disables the emergency pause state. Only callable by admins.  When paused,
-     * functions that modify verification status will be disabled.
+     * @notice Toggles the emergency pause state of the contract.
+     * @dev Only callable by admins. Emits an `EmergencyAction` event with the new paused state.
      */
     function toggleEmergencyPause() external onlyAdmin nonReentrant {
         if (paused()) {
@@ -150,14 +138,5 @@ contract HitmakrVerification is ReentrancyGuard, Pausable {
             _pause();
         }
         emit EmergencyAction(paused());
-    }
-
-    /**
-     * @notice Checks the verification status of a given address.
-     * @param account The address to check.
-     * @return `true` if the address is verified, `false` otherwise.
-     */
-    function isVerified(address account) external view returns (bool) {
-        return _verificationStatus[account];
     }
 }

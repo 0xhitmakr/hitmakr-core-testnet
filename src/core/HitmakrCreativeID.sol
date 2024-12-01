@@ -1,74 +1,65 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "openzeppelin-contracts/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "../interfaces/core/IHitmakrVerification.sol";
 import "../interfaces/accesscontrol/IHitmakrControlCenter.sol";
 
 /**
  * @title HitmakrCreativeID
  * @author Hitmakr Protocol
- * @notice This contract manages unique Creative IDs for verified Hitmakr users.  These IDs are essential for
- * associating creatives with their uploaded content, specifically for generating Decentralized Standard
- * Recording Codes (DSRCs).  Only verified users can register a Creative ID, which consists of a two-letter
- * country code and a five-character alphanumeric registry code. This contract enforces strict validation
- * rules and implements security measures like reentrancy protection and an emergency pause mechanism.
+ * @notice Manages unique Creative IDs for verified Hitmakr users.
+ * @dev This contract allows verified users to register a unique Creative ID based on their country and a registry code. It integrates with `HitmakrVerification` for user verification and `HitmakrControlCenter` for admin access control. The contract implements an emergency pause mechanism for added security.
  */
 contract HitmakrCreativeID is ReentrancyGuard, Pausable {
-    /*
-     * Custom errors for gas-efficient error handling and detailed revert reasons.
-     */
+    /// @notice Error for when an unverified user attempts to register a Creative ID
     error UserNotVerified();
+    /// @notice Error for when an invalid country code is provided
     error InvalidCountryCode();
+    /// @notice Error for when an invalid registry code is provided
     error InvalidRegistryCode();
+    /// @notice Error for when attempting to register a Creative ID that is already taken
     error CreativeIDTaken();
+    /// @notice Error for when a user attempts to register a second Creative ID
     error AlreadyHasCreativeID();
+    /// @notice Error for when a zero address is provided for the verification contract
     error InvalidVerificationContract();
+    /// @notice Error for when an unauthorized user attempts to perform an admin action
     error Unauthorized();
 
-    /*
-     * Immutable reference to the HitmakrVerification contract.  This is used to verify the user's
-     * verification status before allowing them to register a Creative ID.
-     */
+    /// @notice The HitmakrVerification contract used for checking user verification status
     IHitmakrVerification public immutable verificationContract;
     
-    /*
-     * Struct to store information about a Creative ID. Packing these variables into a struct can
-     * improve gas efficiency.
+    /**
+     * @notice Structure to store information about a Creative ID.
+     * @member id The actual Creative ID string.
+     * @member timestamp The timestamp when the Creative ID was registered.
+     * @member exists A boolean indicating whether the Creative ID exists.
      */
     struct CreativeIDInfo {
-        string id;           // The Creative ID string (countryCode + registryCode).
-        uint40 timestamp;    // Timestamp of Creative ID registration.
-        bool exists;         // Boolean indicating if the Creative ID exists for a user.
+        string id;
+        uint40 timestamp;
+        bool exists;
     }
     
-    /*
-     * Mapping to store Creative ID information for each user address.
-     * Mapping to track whether a specific Creative ID is already taken.
-     * Counter for the total number of Creative IDs registered.
-     */
-    mapping(address => CreativeIDInfo) private _creativeIDRegistry;
-    mapping(string => bool) private _takenCreativeIDs;
-    uint256 private _totalCreativeIDs;
+    /// @notice Mapping from user address to their Creative ID information
+    mapping(address => CreativeIDInfo) public creativeIDRegistry;
+    /// @notice Mapping to check if a Creative ID is already taken
+    mapping(string => bool) public takenCreativeIDs;
+    /// @notice Total number of registered Creative IDs
+    uint256 public totalCreativeIDs;
 
-    /*
-     * Events emitted by the contract. These events provide a record of Creative ID registrations
-     * and emergency actions. The indexed keyword on the user parameter in `CreativeIDRegistered`
-     * enables efficient filtering of events by user address.
-     */
+    /// @notice Event emitted when a Creative ID is registered
     event CreativeIDRegistered(address indexed user, string creativeId, uint40 timestamp);
+    /// @notice Event emitted when the contract's pause state changes
     event EmergencyAction(bool paused);
 
-    /*
-     * Modifier to restrict access to only administrator addresses as defined in the
-     * HitmakrControlCenter contract.  This ensures only authorized users can toggle the
-     * emergency pause state.
-     */
+    /// @notice Modifier that restricts access to only admin users defined in HitmakrControlCenter
     modifier onlyAdmin() {
         address controlCenter = verificationContract.HITMAKR_CONTROL_CENTER();
-        IHitmakrControlCenter cc = IHitmakrControlCenter(controlCenter);
-        if (!cc.isAdmin(msg.sender)) revert Unauthorized();
+        if (!AccessControl(controlCenter).hasRole(IHitmakrControlCenter(controlCenter).ADMIN_ROLE(), msg.sender)) revert Unauthorized();
         _;
     }
 
@@ -82,45 +73,46 @@ contract HitmakrCreativeID is ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Registers a new Creative ID for the calling user. Reverts if the user is not verified,
-     * the country code or registry code is invalid, or the Creative ID is already taken.  Emits a
-     * CreativeIDRegistered event upon successful registration.
-     * @param countryCode A two-letter country code (e.g., "US", "UK"). Must be uppercase.
-     * @param registryCode A five-character alphanumeric registry code (e.g., "123AB").  Must be uppercase.
+     * @notice Allows a verified user to register a new Creative ID.
+     * @param countryCode The two-letter country code (uppercase).
+     * @param registryCode The five-character alphanumeric registry code (uppercase).
+     * @dev Reverts if the user is not verified, the country code or registry code is invalid, or the Creative ID is already taken. Emits a `CreativeIDRegistered` event upon successful registration.
      */
-    function register(string calldata countryCode, string calldata registryCode)
+    function register(
+        string calldata countryCode, 
+        string calldata registryCode
+    ) 
         external
         whenNotPaused
-        nonReentrant
+        nonReentrant 
     {
-        if (!verificationContract.isVerified(msg.sender)) revert UserNotVerified();
-        if (_creativeIDRegistry[msg.sender].exists) revert AlreadyHasCreativeID();
+        if (!verificationContract.verificationStatus(msg.sender)) revert UserNotVerified();
+        if (creativeIDRegistry[msg.sender].exists) revert AlreadyHasCreativeID();
         
         if (!_isValidCountryCode(countryCode)) revert InvalidCountryCode();
         if (!_isValidRegistryCode(registryCode)) revert InvalidRegistryCode();
 
         string memory fullCreativeId = string.concat(countryCode, registryCode);
-        if (_takenCreativeIDs[fullCreativeId]) revert CreativeIDTaken();
+        if (takenCreativeIDs[fullCreativeId]) revert CreativeIDTaken();
 
         uint40 timestamp = uint40(block.timestamp);
-        _creativeIDRegistry[msg.sender] = CreativeIDInfo({
+        creativeIDRegistry[msg.sender] = CreativeIDInfo({
             id: fullCreativeId,
             timestamp: timestamp,
             exists: true
         });
-        _takenCreativeIDs[fullCreativeId] = true;
+        takenCreativeIDs[fullCreativeId] = true;
         
-        unchecked {  // Safe because totalCreativeIDs is unlikely to overflow.
-            ++_totalCreativeIDs;
+        unchecked {
+            ++totalCreativeIDs;
         }
 
         emit CreativeIDRegistered(msg.sender, fullCreativeId, timestamp);
     }
 
     /**
-     * @notice Toggles the emergency pause state of the contract. This function is only callable by
-     * administrators and is used to halt Creative ID registrations during emergencies.  Emits an
-     * EmergencyAction event.
+     * @notice Toggles the emergency pause state of the contract.
+     * @dev Only callable by admin users. Emits an `EmergencyAction` event.
      */
     function toggleEmergencyPause() external onlyAdmin nonReentrant {
         if (paused()) {
@@ -131,54 +123,10 @@ contract HitmakrCreativeID is ReentrancyGuard, Pausable {
         emit EmergencyAction(paused());
     }
 
-
     /**
-     * @notice Retrieves information about a user's Creative ID.
-     * @param user The address of the user to query.
-     * @return id The Creative ID string. Returns an empty string if the user does not have a Creative ID.
-     * @return timestamp The timestamp of Creative ID registration. Returns 0 if the user does not have a 
-     * Creative ID.
-     * @return exists A boolean indicating whether the user has a registered Creative ID.
-     */
-    function getCreativeID(address user) external view returns (
-        string memory id,
-        uint40 timestamp,
-        bool exists
-    ) {
-        CreativeIDInfo memory info = _creativeIDRegistry[user];
-        return (info.id, info.timestamp, info.exists);
-    }
-
-    /**
-     * @notice Checks if a user has a registered Creative ID.
-     * @param user The address to check.
-     * @return `true` if the user has a registered Creative ID, `false` otherwise.
-     */
-    function hasCreativeID(address user) external view returns (bool) {
-        return _creativeIDRegistry[user].exists;
-    }
-
-    /**
-     * @notice Checks if a given Creative ID is already taken.
-     * @param creativeId The Creative ID to check.
-     * @return `true` if the Creative ID is already registered, `false` otherwise.
-     */
-    function isCreativeIDTaken(string calldata creativeId) external view returns (bool) {
-        return _takenCreativeIDs[creativeId];
-    }
-
-    /**
-     * @notice Returns the total number of registered Creative IDs.
-     * @return The total number of registered Creative IDs.
-     */
-    function getTotalCreativeIDs() external view returns (uint256) {
-        return _totalCreativeIDs;
-    }
-
-
-    /*
-     * Internal helper functions to validate the format of country and registry codes. These functions
-     * help ensure data integrity and prevent invalid Creative IDs from being registered.
+     * @dev Internal function to validate the country code.
+     * @param countryCode The country code to validate.
+     * @return True if the country code is valid, false otherwise.
      */
     function _isValidCountryCode(string memory countryCode) private pure returns (bool) {
         bytes memory country = bytes(countryCode);
@@ -192,14 +140,19 @@ contract HitmakrCreativeID is ReentrancyGuard, Pausable {
         return true;
     }
 
+    /**
+     * @dev Internal function to validate the registry code.
+     * @param registryCode The registry code to validate.
+     * @return True if the registry code is valid, false otherwise.
+     */
     function _isValidRegistryCode(string memory registryCode) private pure returns (bool) {
         bytes memory registry = bytes(registryCode);
         if (registry.length != 5) return false;
         
         for (uint256 i = 0; i < 5;) {
             bytes1 char = registry[i];
-            bool isValid = (char >= 0x30 && char <= 0x39) || // 0-9
-                         (char >= 0x41 && char <= 0x5A);     // A-Z
+            bool isValid = (char >= 0x30 && char <= 0x39) || 
+                         (char >= 0x41 && char <= 0x5A);    
             if (!isValid) return false;
             unchecked { ++i; }
         }
