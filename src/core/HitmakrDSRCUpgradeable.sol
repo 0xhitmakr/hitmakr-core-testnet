@@ -248,7 +248,7 @@ contract HitmakrDSRCUpgradeable is
         return (earnings.purchase, earnings.royalty, earnings.pending, earnings.purchase + earnings.royalty);
     }
 
-    function royaltyInfo(uint256, uint256 salePrice) external view override returns (address receiver, uint256 royaltyAmount) {
+    function royaltyInfo(uint256 tokenId, uint256 salePrice) external view override returns (address receiver, uint256 royaltyAmount) {
         if (salePrice == 0) {
             return (_ownerOf(tokenId), 0);
         }
