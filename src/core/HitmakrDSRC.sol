@@ -1,27 +1,38 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "../interfaces/core/indexers/IHitmakrDSRCPurchaseIndexer.sol";
-import "../interfaces/core/IERC7066.sol";
+import "./ERC7066.sol";
 
 /**
  * @title HitmakrDSRC
  * @author Hitmakr Protocol
- * @notice This contract represents a Decentralized Standard Recording Code (DSRC) implemented as an ERC721 NFT.
- * @dev It includes functionality for purchasing DSRCs, distributing royalties, updating the price, and managing token locks according to IERC7066. The contract is optimized for gas efficiency and implements security measures like reentrancy guards.
+ * @notice This contract implements a Digital Scarcity Rights Contract (DSRC) for Hitmakr, allowing creators to mint and sell unique digital assets with different edition types (Streaming, Collectors, Licensing).
+ * @dev The contract uses ERC7066 for NFT functionality, integrates with a payment token, and includes royalty distribution logic. It also features an indexer for tracking purchases and supports locking NFTs for cross-chain functionality.
  */
-contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
+contract HitmakrDSRC is ERC7066, ReentrancyGuard, IERC2981 {
     using SafeERC20 for IERC20;
 
     /**
-     * @notice Structure representing a royalty recipient and their percentage share.
-     * @param recipient The address of the royalty recipient.
-     * @param percentage The percentage of royalties allocated to this recipient (in basis points).
+     * @notice Enumeration representing the different edition types for the DSRC.
+     * @dev Streaming: Free edition for streaming purposes.
+     * @dev Collectors: Limited edition for collectors.
+     * @dev Licensing: Edition for licensing purposes.
+     */
+    enum Edition {
+        Streaming,
+        Collectors,
+        Licensing
+    }
+
+    /**
+     * @notice Structure for defining a royalty split.
+     * @member recipient The address of the royalty recipient.
+     * @member percentage The percentage of royalties allocated to this recipient (expressed in basis points).
      */
     struct RoyaltySplit {
         address recipient;
@@ -29,10 +40,10 @@ contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
     }
 
     /**
-     * @notice Structure for tracking earnings from DSRC sales and royalties.
-     * @param purchase Total earnings from primary sales.
-     * @param royalty Total earnings from secondary sales royalties.
-     * @param pending Pending earnings that have not yet been distributed.
+     * @notice Structure for tracking earnings from the DSRC.
+     * @member purchase Total earnings from primary sales.
+     * @member royalty Total earnings from royalties.
+     * @member pending Pending earnings that haven't been distributed yet.
      */
     struct Earnings {
         uint96 purchase;
@@ -40,123 +51,146 @@ contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
         uint64 pending;
     }
 
-    /// @notice Error when attempting to lock a token that is already locked
-    error AlreadyLocked();
-    /// @notice Error when attempting to unlock a token that is not locked
-    error NotLocked();
-    /// @notice Error when a non-locker attempts to unlock a token
-    error NotLocker();
-    /// @notice Error when attempting an action on a locked token that is not allowed
-    error LockedToken();
-    /// @notice Error when a user attempts to purchase a DSRC they have already purchased
-    error AlreadyPurchased();
-    /// @notice Error when a transfer of ERC20 tokens fails
-    error TransferFailed();
-    /// @notice Error for unauthorized access
-    error Unauthorized();
-    /// @notice Error when attempting a transfer that is not allowed
-    error TransferNotAllowed();
-    /// @notice Error when the sum of royalty percentages does not equal 100% (BASIS_POINTS)
-    error InvalidPercentages();
-    /// @notice Error when there are no royalties to distribute
-    error NoRoyaltiesToDistribute();
-    /// @notice Error when a function restricted to the primary chain is called on a different chain
-    error NotPrimaryChain();
-    /// @notice Error for invalid parameters related to the selected chain.
-    error InvalidChainParam();
-    /// @notice Error for when a zero address is passed as parameter.
-    error ZeroAddress();
+    /**
+     * @notice Structure for configuring an edition.
+     * @member price The price of the edition.
+     * @member isEnabled Whether the edition is currently enabled for purchase.
+     * @member isCreated Whether the edition has been created.
+     */
+    struct EditionConfig {
+        uint256 price;
+        bool isEnabled;
+        bool isCreated;
+    }
 
-    /// @notice Event emitted when a DSRC is purchased
-    event Purchased(address indexed buyer, uint256 amount, string selectedChain);
-    /// @notice Event emitted when the DSRC price is updated
-    event PriceUpdated(uint256 newPrice);
-    /// @notice Event emitted when royalties are received by the contract
+    /// @notice Error: User has already purchased an edition of this DSRC.
+    error AlreadyPurchased();
+    /// @notice Error: ERC20 token transfer failed.
+    error TransferFailed();
+    /// @notice Error: Caller is not authorized to perform the action.
+    error Unauthorized();
+    /// @notice Error: Invalid royalty percentages provided. The sum must equal BASIS_POINTS.
+    error InvalidPercentages();
+    /// @notice Error: No royalties are available to distribute.
+    error NoRoyaltiesToDistribute();
+    /// @notice Error: Function can only be called on the primary chain.
+    error NotPrimaryChain();
+    /// @notice Error: Invalid chain parameter provided.
+    error InvalidChainParam();
+    /// @notice Error: Zero address provided where it's not allowed.
+    error ZeroAddress();
+    /// @notice Error: Invalid edition type provided.
+    error InvalidEdition();
+    /// @notice Error: The specified edition is not enabled for purchase.
+    error EditionNotEnabled();
+    /// @notice Error: The specified edition has not been created.
+    error EditionNotCreated();
+    /// @notice Error: The specified edition has already been created.
+    error EditionAlreadyCreated();
+    /// @notice Error: The Streaming edition must have a price of zero.
+    error StreamingMustBeFree();
+    /// @notice Error: Invalid parameters provided to a function.
+    error InvalidParams();
+
+    /// @notice Event emitted when a user purchases an edition of the DSRC.
+    event Purchased(address indexed buyer, uint256 amount, string selectedChain, Edition edition);
+    /// @notice Event emitted when a new edition is created.
+    event EditionCreated(Edition indexed edition, uint256 price);
+    /// @notice Event emitted when an edition's status (enabled/disabled) is updated.
+    event EditionStatusUpdated(Edition indexed edition, bool isEnabled);
+    /// @notice Event emitted when an edition's price is updated.
+    event EditionPriceUpdated(Edition indexed edition, uint256 newPrice);
+    /// @notice Event emitted when royalties are received by the contract.
     event RoyaltyReceived(uint256 amount);
-    /// @notice Event emitted when royalties are distributed to a recipient
+    /// @notice Event emitted when royalties are distributed to a recipient.
     event RoyaltyDistributed(address indexed recipient, uint256 amount, bool isPurchaseEarning);
-    /// @notice Event emitted when all pending royalties are distributed.
+    /// @notice Event emitted after all royalties for a given distribution are sent.
     event RoyaltiesDistributed(uint256 totalAmount, bool isPurchaseEarning);
 
 
-    /// @notice Platform fee percentage (in basis points)
+    /// @notice The platform fee percentage (10%).
     uint16 public constant PLATFORM_FEE = 1000;
-    /// @notice Total basis points (100%)
+    /// @notice Basis points for percentage calculations (100%).
     uint16 public constant BASIS_POINTS = 10000;
-    /// @notice Chain identifier for the primary chain where purchases are allowed
+    /// @notice Keccak256 hash of the primary chain identifier.
     bytes32 public constant PRIMARY_CHAIN_ID = keccak256("SKL");
-    /// @notice Address of the treasury to receive platform fees
+    /// @notice String identifier of the primary chain.
+    string public constant PRIMARY_CHAIN = "SKL";
+    /// @notice Address of the treasury wallet.
     address public constant TREASURY = 0x699FBF0054B72EF2a85A7f587342B620E49f7f46;
 
-    /// @notice The unique identifier for this DSRC
+    /// @notice Unique identifier for the DSRC.
     string public dsrcId;
-    /// @notice The address of the DSRC creator
+    /// @notice Address of the DSRC creator.
     address public immutable creator;
-    /// @notice The ERC20 token used for payments
+    /// @notice ERC20 token used for payments.
     IERC20 public immutable paymentToken;
-    /// @notice The indexer contract for tracking DSRC purchases
+    /// @notice Indexer contract for tracking DSRC purchases.
     IHitmakrDSRCPurchaseIndexer public immutable purchaseIndexer;
 
-    /// @notice The URI for the DSRC metadata
+    /// @notice URI for the DSRC metadata.
     string public tokenURI_;
-    /// @notice Identifier for the blockchain where this DSRC is primarily used
+    /// @notice Identifier of the currently selected chain.
     string public selectedChain;
-    /// @notice The current price of the DSRC in payment tokens
-    uint256 public price;
-    /// @notice The total number of DSRCs minted
-    uint256 public totalSupply_;
-    /// @notice Earnings tracking structure
+    /// @notice Earnings information for the DSRC.
     Earnings public earnings;
-    /// @notice Array of royalty splits
+    /// @notice Array of royalty splits.
     RoyaltySplit[] public royaltySplits;
     
-    /// @notice Mapping from token ID to the address that locked it (IERC7066)
-    mapping(uint256 => address) public lockers;
-    /// @notice Mapping from user address to a boolean indicating if they have purchased this DSRC
+    /// @notice Mapping to track whether a user has purchased an edition.
     mapping(address => bool) public hasPurchased;
+    /// @notice Mapping from edition type to its configuration.
+    mapping(Edition => EditionConfig) public editionConfigs;
+    /// @notice Mapping from token ID to its edition type.
+    mapping(uint256 => Edition) public tokenEditions;
+    /// @notice Total supply of minted tokens for this DSRC.
+    uint256 public totalSupply_;
 
-    /// @notice Modifier to restrict functions to calls only from the primary chain
+    /// @notice Modifier to restrict function calls to the primary chain.
     modifier onlyPrimaryChain() {
         if (keccak256(abi.encodePacked(selectedChain)) != PRIMARY_CHAIN_ID) 
             revert NotPrimaryChain();
         _;
     }
 
-    /// @notice Modifier to restrict functions to calls only from the creator address
+    /// @notice Modifier to restrict function calls to the DSRC creator.
     modifier onlyCreator() {
         if (msg.sender != creator) revert Unauthorized();
         _;
     }
 
     /**
-     * @notice Constructor for the HitmakrDSRC contract
-     * @param _dsrcId The unique identifier for the DSRC
-     * @param uri The URI for the DSRC metadata
-     * @param _creator The address of the DSRC creator
-     * @param _paymentToken The address of the ERC20 payment token
-     * @param _price The initial price of the DSRC
-     * @param recipients An array of royalty recipient addresses
-     * @param percentages An array of royalty percentages (in basis points) corresponding to the recipients
-     * @param _selectedChain The identifier for the blockchain where this DSRC is primarily used
-     * @param _purchaseIndexer The address of the purchase indexer contract
+     * @notice Constructor initializes the DSRC contract.
+     * @param _dsrcId Unique identifier for the DSRC.
+     * @param uri URI for the DSRC metadata.
+     * @param _creator Address of the DSRC creator.
+     * @param _paymentToken Address of the ERC20 payment token.
+     * @param initialEditions Array of initial edition types to create.
+     * @param editionPrices Array of prices for the initial editions.
+     * @param recipients Array of royalty recipient addresses.
+     * @param percentages Array of royalty percentages for each recipient.
+     * @param _selectedChain Identifier of the initially selected chain.
+     * @param _purchaseIndexer Address of the purchase indexer contract.
+     * @dev Initializes the contract with provided parameters, creates initial editions, and sets up royalty splits.
      */
     constructor(
         string memory _dsrcId,
         string memory uri,
         address _creator,
         address _paymentToken,
-        uint256 _price,
+        Edition[] memory initialEditions,
+        uint256[] memory editionPrices,
         address[] memory recipients,
         uint16[] memory percentages,
         string memory _selectedChain,
         address _purchaseIndexer
     ) ERC721(_dsrcId, _dsrcId) {
         if (bytes(_selectedChain).length == 0) revert InvalidChainParam();
-        if (_creator == address(0) || 
-            _paymentToken == address(0) || 
-            _purchaseIndexer == address(0)) revert ZeroAddress();
+        if (_creator == address(0) || _paymentToken == address(0) || _purchaseIndexer == address(0)) 
+            revert ZeroAddress();
         if (recipients.length == 0 || recipients.length != percentages.length) 
             revert InvalidPercentages();
+        if (initialEditions.length != editionPrices.length) revert InvalidParams();
 
         dsrcId = _dsrcId;
         tokenURI_ = uri;
@@ -164,7 +198,22 @@ contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
         creator = _creator;
         paymentToken = IERC20(_paymentToken);
         purchaseIndexer = IHitmakrDSRCPurchaseIndexer(_purchaseIndexer);
-        price = _price;
+
+        // Streaming edition is always free and enabled by default
+        editionConfigs[Edition.Streaming] = EditionConfig({
+            price: 0,
+            isEnabled: true,
+            isCreated: true
+        });
+
+        for(uint256 i = 0; i < initialEditions.length; i++) {
+            Edition edition = initialEditions[i];
+            if(edition == Edition.Streaming) {
+                if(editionPrices[i] != 0) revert StreamingMustBeFree();
+                continue;
+            }
+            _createEdition(edition, editionPrices[i]);
+        }
 
         uint16 totalPercentage;
         for(uint256 i = 0; i < recipients.length; i++) {
@@ -177,88 +226,47 @@ contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
     }
 
     /**
-     * @notice Locks a specific token, preventing certain actions like transfers.
-     * @param tokenId The ID of the token to lock.
-     * @dev Implements IERC7066. Reverts if the caller is not authorized.
+     * @notice Creates a new edition for the DSRC.
+     * @param edition The type of edition to create.
+     * @param price The price of the edition.
+     * @dev Only callable by the creator on the primary chain. Emits an `EditionCreated` event.
      */
-    function lock(uint256 tokenId) external override {
-        if (!isApprovedOrOwner(msg.sender, tokenId)) revert Unauthorized();
-        if (lockers[tokenId] != address(0)) revert AlreadyLocked();
+    function createEdition(Edition edition, uint256 price) external onlyPrimaryChain onlyCreator {
+        _createEdition(edition, price);
+    }
+
+    /**
+     * @dev Internal function to create a new edition.
+     * @param edition The type of edition to create.
+     * @param price The price of the edition.
+     */
+    function _createEdition(Edition edition, uint256 price) internal {
+        if(edition == Edition.Streaming) revert InvalidEdition();
+        if(editionConfigs[edition].isCreated) revert EditionAlreadyCreated();
         
-        lockers[tokenId] = msg.sender;
-        emit Lock(tokenId, msg.sender);
+        editionConfigs[edition] = EditionConfig({
+            price: price,
+            isEnabled: true,
+            isCreated: true
+        });
+
+        emit EditionCreated(edition, price);
     }
 
     /**
-     * @notice Locks a given `tokenId` to the specified `_locker` address.
-     * @param tokenId The ID of the token to lock.
-     * @param _locker Address to which the token will be locked.
-     * @dev Follows IERC7066 standard. Reverts if `tokenId` is already locked, if `_locker` is a zero address or if the caller is not authorized.
+     * @notice Allows a user to purchase a specific edition of the DSRC.
+     * @param edition The type of edition to purchase.
+     * @dev Only callable on the primary chain. Reverts if the user has already purchased, the edition is not enabled or created, or the transfer fails. 
+     *      Mints a new NFT to the buyer, updates purchase tracking, and emits a `Purchased` event.
      */
-    function lock(uint256 tokenId, address _locker) external override {
-        if (!isApprovedOrOwner(msg.sender, tokenId)) revert Unauthorized();
-        if (lockers[tokenId] != address(0)) revert AlreadyLocked();
-        if (_locker == address(0)) revert ZeroAddress();
-
-        lockers[tokenId] = _locker;
-        emit Lock(tokenId, _locker);
-    }
-
-    /**
-     * @notice Checks if an address is approved for a token or owns it.
-     * @param spender The address to check.
-     * @param tokenId The token ID.
-     * @return True if approved or owner, false otherwise.
-     */
-    function isApprovedOrOwner(address spender, uint256 tokenId) public view returns (bool) {
-        address owner = ownerOf(tokenId);
-        return (spender == owner || 
-                isApprovedForAll(owner, spender) || 
-                getApproved(tokenId) == spender);
-    }
-
-    /**
-     * @notice Unlocks a previously locked token.
-     * @param tokenId The ID of the token to unlock.
-     * @dev Implements IERC7066. Reverts if the token is not locked or if the caller is not the locker.
-     */
-    function unlock(uint256 tokenId) external override {
-        if (lockers[tokenId] == address(0)) revert NotLocked();
-        if (lockers[tokenId] != msg.sender) revert NotLocker();
-
-        delete lockers[tokenId];
-        emit Unlock(tokenId);
-    }
-
-    /**
-     * @notice `transferAndLock` function is disabled in the `HitmakrDSRC` implementation.
-     */
-    function transferAndLock(
-        uint256,
-        address,
-        address,
-        bool
-    ) external pure override {
-        revert TransferNotAllowed();
-    }
-
-    /**
-     * @notice Returns the address of the locker for a given token ID, adhering to IERC7066.
-     * @param tokenId The ID of the token.
-     * @return address The address of the locker, or the zero address if unlocked.
-     */
-    function lockerOf(uint256 tokenId) external view override returns (address) {
-        return lockers[tokenId];
-    }
-
-    /**
-     * @notice Allows a user to purchase a DSRC.
-     * @dev Transfers payment tokens, mints a new DSRC to the buyer, updates earnings, and indexes the purchase.
-     *      Reverts if the user has already purchased, the transfer fails, or if not called on the primary chain.
-     */
-    function purchase() external nonReentrant onlyPrimaryChain {
+    function purchase(Edition edition) external nonReentrant onlyPrimaryChain {
         if(hasPurchased[msg.sender]) revert AlreadyPurchased();
+        
+        EditionConfig storage config = editionConfigs[edition];
+        if(!config.isCreated) revert EditionNotCreated();
+        if(!config.isEnabled) revert EditionNotEnabled();
 
+        uint256 price = config.price;
         if(price > 0) {
             paymentToken.safeTransferFrom(msg.sender, address(this), price);
 
@@ -273,71 +281,103 @@ contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
             }
         }
 
+        uint256 tokenId;
         unchecked {
-            _safeMint(msg.sender, ++totalSupply_);
+            tokenId = ++totalSupply_;
         }
+        
+        _safeMint(msg.sender, tokenId);
+        tokenEditions[tokenId] = edition;
         
         hasPurchased[msg.sender] = true;
         purchaseIndexer.indexPurchase(msg.sender, dsrcId, price);
 
-        emit Purchased(msg.sender, price, selectedChain);
+        emit Purchased(msg.sender, price, selectedChain, edition);
     }
 
     /**
-     * @dev Internal function to update ownership of a token. Prevents transfers if the token is locked.
-     * @inheritdoc ERC721
+     * @notice Updates the price of a specific edition.
+     * @param edition The edition type to update.
+     * @param newPrice The new price for the edition.
+     * @dev Only callable by the creator on the primary chain. Emits an `EditionPriceUpdated` event.
      */
-    function _update(
-        address to,
-        uint256 tokenId,
-        address auth
-    ) internal virtual override returns (address) {
-        if (lockers[tokenId] != address(0)) revert LockedToken();
-        address from = _ownerOf(tokenId);
-        
-        if (from != address(0) && to != address(0)) revert TransferNotAllowed();
-
-        return super._update(to, tokenId, auth);
+    function updateEditionPrice(Edition edition, uint256 newPrice) external onlyPrimaryChain onlyCreator {
+        if(edition == Edition.Streaming) revert InvalidEdition();
+        if(!editionConfigs[edition].isCreated) revert EditionNotCreated();
+        editionConfigs[edition].price = newPrice;
+        emit EditionPriceUpdated(edition, newPrice);
     }
 
     /**
-     * @dev Overrides the `approve` function to prevent approval if the token is locked.
-     * @inheritdoc ERC721
+     * @notice Updates the enabled status of a specific edition.
+     * @param edition The edition type to update.
+     * @param isEnabled The new enabled status for the edition.
+     * @dev Only callable by the creator on the primary chain. Emits an `EditionStatusUpdated` event.
      */
-    function approve(address operator, uint256 tokenId) public virtual override {
-        if (lockers[tokenId] != address(0)) revert LockedToken();
-        super.approve(operator, tokenId);
+    function updateEditionStatus(Edition edition, bool isEnabled) external onlyPrimaryChain onlyCreator {
+        if(!editionConfigs[edition].isCreated) revert EditionNotCreated();
+        editionConfigs[edition].isEnabled = isEnabled;
+        emit EditionStatusUpdated(edition, isEnabled);
     }
 
     /**
-     * @dev Disables setting approval for all tokens by reverting.
-     * @inheritdoc ERC721
+     * @notice Retrieves the configuration of a specific edition.
+     * @param edition The edition type to retrieve the config for.
+     * @return price The price of the edition.
+     * @return isEnabled Whether the edition is enabled.
+     * @return isCreated Whether the edition has been created.
      */
-    function setApprovalForAll(address, bool) public pure override {
-        revert TransferNotAllowed();
+    function getEditionConfig(Edition edition) external view returns (
+        uint256 price, 
+        bool isEnabled, 
+        bool isCreated
+    ) {
+        EditionConfig storage config = editionConfigs[edition];
+        return (config.price, config.isEnabled, config.isCreated);
     }
 
     /**
-     * @notice Updates the price of the DSRC.
-     * @param newPrice The new price in payment tokens.
-     * @dev Only callable by the creator. Emits a `PriceUpdated` event.
+     * @notice Retrieves the edition type of a specific token.
+     * @param tokenId The ID of the token.
+     * @return The edition type of the token.
      */
-    function updatePrice(uint256 newPrice) external onlyPrimaryChain onlyCreator {
-        price = newPrice;
-        emit PriceUpdated(newPrice);
+    function getTokenEdition(uint256 tokenId) external view returns (Edition) {
+        return tokenEditions[tokenId];
     }
 
     /**
-     * @notice Returns detailed earnings information for the DSRC.
+     * @notice Transfers a token and locks it, used for cross-chain functionality.
+     * @param tokenId The ID of the token to transfer.
+     * @param from The address to transfer the token from.
+     * @param to The address to transfer the token to.
+     * @param setApprove Whether to approve the caller for the token.
+     * @dev Overrides the ERC7066 implementation. Reverts if the caller is not authorized.
+     */
+    function transferAndLock(
+        uint256 tokenId, 
+        address from, 
+        address to, 
+        bool setApprove
+    ) external override {
+        if (!_isAuthorized(_ownerOf(tokenId), _msgSender(), tokenId)) revert Unauthorized();
+        transferFrom(from, to, tokenId);
+        if (setApprove) {
+            _approve(_msgSender(), tokenId, _msgSender());
+        }
+        _lock(tokenId, _msgSender());
+    }
+
+    /**
+     * @notice Retrieves earnings information for the DSRC.
      * @return purchaseEarnings Total earnings from primary sales.
      * @return royaltyEarnings Total earnings from royalties.
-     * @return pendingAmount Amount of pending earnings to be distributed.
-     * @return totalEarnings Sum of purchase and royalty earnings.
+     * @return pendingAmount Current pending earnings.
+     * @return totalEarnings Total earnings (purchase + royalty).
      */
     function getEarningsInfo() external view returns (
-        uint256 purchaseEarnings,
-        uint256 royaltyEarnings,
-        uint256 pendingAmount,
+        uint256 purchaseEarnings, 
+        uint256 royaltyEarnings, 
+        uint256 pendingAmount, 
         uint256 totalEarnings
     ) {
         return (
@@ -349,57 +389,34 @@ contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
     }
 
     /**
-     * @notice Returns royalty information according to the ERC2981 standard.
+     * @notice Implements the ERC2981 royalty standard.
      * @param salePrice The sale price of the token.
-     * @return receiver The address to receive royalties (this contract).
-     * @return royaltyAmount The amount of royalties to be paid.
-     * @dev The royalty amount is calculated as (salePrice * (BASIS_POINTS - PLATFORM_FEE)) / BASIS_POINTS.
+     * @return receiver The address of the royalty receiver (this contract).
+     * @return royaltyAmount The royalty amount calculated based on the sale price.
      */
-    function royaltyInfo(uint256, uint256 salePrice) external view override 
-        returns (address receiver, uint256 royaltyAmount) 
-    {
+    function royaltyInfo(uint256, uint256 salePrice) external view override returns (
+        address receiver, 
+        uint256 royaltyAmount
+    ) {
         receiver = address(this);
         royaltyAmount = (salePrice * (BASIS_POINTS - PLATFORM_FEE)) / BASIS_POINTS;
     }
 
     /**
-     * @notice Returns the selected chain identifier for this DSRC.
-     * @return The selected chain identifier as a string.
-     */
-    function getSelectedChain() external view returns (string memory) {
-        return selectedChain;
-    }
-
-    /**
-     * @notice Returns the identifier for the primary chain (SKL).
-     * @return The primary chain identifier as a string.
-     */
-    function getPrimaryChain() external pure returns (string memory) {
-        return "SKL";
-    }
-
-    /**
-     * @notice Returns the array of royalty splits.
-     * @return An array of `RoyaltySplit` structs.
-     */
-    function getRoyaltySplits() external view returns (RoyaltySplit[] memory) {
-        return royaltySplits;
-    }
-
-     /**
      * @notice Returns the token URI for the DSRC.
-     * @return The token URI as a string.
-     * @dev This function overrides the ERC721 `tokenURI` function and returns the `tokenURI_` variable.
+     * @return The token URI.
      */
     function tokenURI(uint256) public view override returns (string memory) {
         return tokenURI_;
     }
 
     /**
-     * @notice Distributes pending royalties to the designated recipients.
-     * @param distributeType Determines how to distribute royalties: 
-     *                       0 for purchase earnings, 1 for royalty earnings, 2 for the larger of the two.
-     * @dev Only callable if pending royalties exist. Reverts if not. Emits `RoyaltyDistributed` for each recipient and `RoyaltiesDistributed` for the total amount.
+     * @notice Distributes pending royalties to the specified recipients based on distribute type.
+     * @param distributeType An integer representing the distribution logic to use:
+     *                       0: Distribute pending royalties from purchase earnings to royalty splits.
+     *                       1: Distribute pending royalties from royalty earnings to royalty splits.
+     *                       2: Distribute pending royalties to royalty splits based on which earning type has a higher balance (purchase or royalty).
+     * @dev Reverts if there are no pending royalties to distribute. Emits `RoyaltyDistributed` and `RoyaltiesDistributed` events.
      */
     function distributeRoyalties(uint8 distributeType) external nonReentrant {
         uint64 pendingAmount = earnings.pending;
@@ -429,51 +446,54 @@ contract HitmakrDSRC is ERC721, ReentrancyGuard, IERC2981, IERC7066 {
         emit RoyaltiesDistributed(pendingAmount, isPurchaseEarning);
     }
 
+
     /**
-     * @notice Callback function for receiving royalties from marketplaces implementing ERC2981.
-     * @dev Updates royalty earnings, distributes new royalties according to splits and emits relevant events.
-     *       Only distributes if new royalties greater than zero.
+     * @notice Receives and distributes royalties earned from secondary sales.
+     * @dev Calculates the new royalties received, updates earnings, and distributes them to royalty recipients.
+     *      Emits `RoyaltyReceived`, `RoyaltyDistributed`, and `RoyaltiesDistributed` events.
      */
     function onRoyaltyReceived() external nonReentrant {
         uint256 currentBalance = paymentToken.balanceOf(address(this));
         uint256 newRoyalties = currentBalance - earnings.pending;
-        
-        if(newRoyalties > 0) {
+
+        if (newRoyalties > 0) {
             unchecked {
                 earnings.royalty += uint96(newRoyalties);
             }
-            
             uint256 totalDistributed;
-            
-            for(uint256 i = 0; i < royaltySplits.length; i++) {
+
+            for (uint256 i = 0; i < royaltySplits.length; i++) {
                 uint256 recipientShare;
-                
+
                 if (i == royaltySplits.length - 1) {
                     recipientShare = newRoyalties - totalDistributed;
                 } else {
                     recipientShare = (newRoyalties * royaltySplits[i].percentage) / BASIS_POINTS;
                     totalDistributed += recipientShare;
                 }
-                
+
                 if (recipientShare > 0) {
                     paymentToken.safeTransfer(royaltySplits[i].recipient, recipientShare);
                     emit RoyaltyDistributed(royaltySplits[i].recipient, recipientShare, false);
                 }
             }
-            
             emit RoyaltyReceived(newRoyalties);
             emit RoyaltiesDistributed(newRoyalties, false);
-        }
+        }        
     }
 
+
+
     /**
-     * @notice Checks if this contract supports a given interface.
-     * @dev Overrides the ERC721 and IERC165 `supportsInterface` functions to include IERC2981 and IERC7066 interfaces.
-     * @inheritdoc ERC721
+     * @notice Checks if the contract supports a given interface.
+     * @param interfaceId The interface identifier.
+     * @return True if the interface is supported, false otherwise.
+     * @dev Overrides the ERC7066 implementation to include support for IERC2981.
      */
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721, IERC165) returns (bool) {
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view virtual override(ERC7066, IERC165) returns (bool) {
         return 
-            interfaceId == type(IERC7066).interfaceId ||
             interfaceId == type(IERC2981).interfaceId || 
             super.supportsInterface(interfaceId);
     }

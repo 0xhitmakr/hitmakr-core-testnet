@@ -4,7 +4,7 @@ pragma solidity 0.8.20;
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "../interfaces/accesscontrol/IHitmakrControlCenter.sol";
+import "../interfaces/accesscontrol/IControlCenter.sol";
 import "../interfaces/core/IHitmakrProfiles.sol";
 
 /**
@@ -43,7 +43,9 @@ contract HitmakrVerification is ReentrancyGuard, Pausable {
     /// @notice Modifier to restrict access to only admin roles from HitmakrControlCenter
     modifier onlyAdmin() {
         bytes32 adminRole = HITMAKR_CONTROL_CENTER.ADMIN_ROLE();
-        if (!AccessControl(address(HITMAKR_CONTROL_CENTER)).hasRole(adminRole, msg.sender)) revert Unauthorized();
+        if (!AccessControl(address(HITMAKR_CONTROL_CENTER)).hasRole(adminRole, msg.sender)) {
+            revert Unauthorized();
+        }
         _;
     }
 
@@ -64,14 +66,15 @@ contract HitmakrVerification is ReentrancyGuard, Pausable {
      * @notice Sets the verification status for a single account.
      * @param account The address of the account to update.
      * @param grant True to verify the account, false to unverify.
-     * @dev Reverts if the account address is invalid, the user has no profile, or the verification status is already set to the requested value. Emits a `VerificationUpdated` event.
+     * @dev Only callable by admin. Reverts if the account address is invalid, 
+     * the user has no profile, or the verification status is already set to the requested value.
      */
     function setVerification(
         address account, 
         bool grant
     ) 
         external 
-        onlyAdmin 
+        onlyAdmin
         whenNotPaused 
         nonReentrant 
     {
@@ -87,7 +90,7 @@ contract HitmakrVerification is ReentrancyGuard, Pausable {
      * @notice Batch sets the verification status for multiple accounts.
      * @param accounts An array of addresses to update.
      * @param grant True to verify the accounts, false to unverify.
-     * @dev Reverts if the batch size is invalid or if no accounts were successfully processed. Emits a `BatchVerificationProcessed` event with the count of successful updates. Also emits `VerificationUpdated` for each account processed.
+     * @dev Only callable by admins. Reverts if the batch size is invalid or if no accounts were successfully processed.
      */
     function batchSetVerification(
         address[] calldata accounts,
@@ -102,18 +105,16 @@ contract HitmakrVerification is ReentrancyGuard, Pausable {
         if (len == 0 || len > MAX_BATCH_SIZE) revert BatchTooLarge();
 
         uint256 successCount;
-        bool currentStatus;
-        address account;
-
+        
         for (uint256 i; i < len;) {
-            account = accounts[i];
+            address account = accounts[i];
             
             if (account == address(0) || !HITMAKR_PROFILES._hasProfile(account)) {
                 unchecked { ++i; }
                 continue;
             }
 
-            currentStatus = verificationStatus[account];
+            bool currentStatus = verificationStatus[account];
             if (grant != currentStatus) {
                 verificationStatus[account] = grant;
                 emit VerificationUpdated(account, grant);

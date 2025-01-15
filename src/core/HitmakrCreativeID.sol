@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "../interfaces/core/IHitmakrVerification.sol";
-import "../interfaces/accesscontrol/IHitmakrControlCenter.sol";
+import "../interfaces/accesscontrol/IControlCenter.sol";
 
 /**
  * @title HitmakrCreativeID
@@ -14,19 +14,13 @@ import "../interfaces/accesscontrol/IHitmakrControlCenter.sol";
  * @dev This contract allows verified users to register a unique Creative ID based on their country and a registry code. It integrates with `HitmakrVerification` for user verification and `HitmakrControlCenter` for admin access control. The contract implements an emergency pause mechanism for added security.
  */
 contract HitmakrCreativeID is ReentrancyGuard, Pausable {
-    /// @notice Error for when an unverified user attempts to register a Creative ID
+    /// @notice Custom errors for gas optimization
     error UserNotVerified();
-    /// @notice Error for when an invalid country code is provided
     error InvalidCountryCode();
-    /// @notice Error for when an invalid registry code is provided
     error InvalidRegistryCode();
-    /// @notice Error for when attempting to register a Creative ID that is already taken
     error CreativeIDTaken();
-    /// @notice Error for when a user attempts to register a second Creative ID
     error AlreadyHasCreativeID();
-    /// @notice Error for when a zero address is provided for the verification contract
-    error InvalidVerificationContract();
-    /// @notice Error for when an unauthorized user attempts to perform an admin action
+    error ZeroAddress();
     error Unauthorized();
 
     /// @notice The HitmakrVerification contract used for checking user verification status
@@ -58,8 +52,10 @@ contract HitmakrCreativeID is ReentrancyGuard, Pausable {
 
     /// @notice Modifier that restricts access to only admin users defined in HitmakrControlCenter
     modifier onlyAdmin() {
-        address controlCenter = verificationContract.HITMAKR_CONTROL_CENTER();
-        if (!AccessControl(controlCenter).hasRole(IHitmakrControlCenter(controlCenter).ADMIN_ROLE(), msg.sender)) revert Unauthorized();
+        IHitmakrControlCenter controlCenter = IHitmakrControlCenter(verificationContract.HITMAKR_CONTROL_CENTER());
+        if (!AccessControl(address(controlCenter)).hasRole(controlCenter.ADMIN_ROLE(), msg.sender)) {
+            revert Unauthorized();
+        }
         _;
     }
 
@@ -68,7 +64,7 @@ contract HitmakrCreativeID is ReentrancyGuard, Pausable {
      * @param _verificationContract The address of the HitmakrVerification contract.
      */
     constructor(address _verificationContract) {
-        if (_verificationContract == address(0)) revert InvalidVerificationContract();
+        if (_verificationContract == address(0)) revert ZeroAddress();
         verificationContract = IHitmakrVerification(_verificationContract);
     }
 
@@ -158,5 +154,14 @@ contract HitmakrCreativeID is ReentrancyGuard, Pausable {
         }
         
         return true;
+    }
+
+    function getCreativeID(address user) external view returns (
+        string memory id,
+        uint40 timestamp,
+        bool exists
+    ) {
+        CreativeIDInfo memory info = creativeIDRegistry[user];
+        return (info.id, info.timestamp, info.exists);
     }
 }

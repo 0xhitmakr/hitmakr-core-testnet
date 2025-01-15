@@ -4,77 +4,72 @@ pragma solidity 0.8.20;
 /**
  * @title IHitmakrCreativeID
  * @author Hitmakr Protocol
- * @notice Interface for HitmakrCreativeID contract
+ * @notice Interface for the HitmakrCreativeID contract that manages unique Creative IDs for verified users
  */
 interface IHitmakrCreativeID {
-    /// @dev Custom errors
+    /// @notice Custom errors
     error UserNotVerified();
     error InvalidCountryCode();
     error InvalidRegistryCode();
     error CreativeIDTaken();
     error AlreadyHasCreativeID();
-    error InvalidVerificationContract();
+    error ZeroAddress();
     error Unauthorized();
 
-    /// @dev Structs
+    /**
+     * @notice Structure to store information about a Creative ID
+     * @member id The actual Creative ID string
+     * @member timestamp The timestamp when the Creative ID was registered
+     * @member exists A boolean indicating whether the Creative ID exists
+     */
     struct CreativeIDInfo {
-        string id;           // The actual creative ID
-        uint40 timestamp;    // When it was created
-        bool exists;         // If it exists
+        string id;
+        uint40 timestamp;
+        bool exists;
     }
 
-    /// @dev Events
+    /// @notice Event emitted when a Creative ID is registered
     event CreativeIDRegistered(address indexed user, string creativeId, uint40 timestamp);
+    /// @notice Event emitted when the contract's pause state changes
     event EmergencyAction(bool paused);
 
-    /**
-     * @notice Register a new creative ID
-     * @param countryCode Two-letter country code (uppercase)
-     * @param registryCode Five-character alphanumeric code (uppercase)
-     */
-    function register(string calldata countryCode, string calldata registryCode) external;
+    /// @notice Returns the verification contract instance
+    function verificationContract() external view returns (address);
+    
+    /// @notice Returns the Creative ID information for a given address
+    function creativeIDRegistry(address) external view returns (CreativeIDInfo memory);
+    
+    /// @notice Returns whether a Creative ID is taken
+    function takenCreativeIDs(string memory) external view returns (bool);
+    
+    /// @notice Returns the total number of registered Creative IDs
+    function totalCreativeIDs() external view returns (uint256);
 
     /**
-     * @notice Emergency pause toggle
+     * @notice Allows a verified user to register a new Creative ID
+     * @param countryCode The two-letter country code (uppercase)
+     * @param registryCode The five-character alphanumeric registry code (uppercase)
+     */
+    function register(
+        string calldata countryCode, 
+        string calldata registryCode
+    ) external;
+
+    /**
+     * @notice Toggles the emergency pause state of the contract
      */
     function toggleEmergencyPause() external;
 
     /**
-     * @notice Get creative ID information for a user
-     * @param user Address to query
-     * @return id The creative ID
-     * @return timestamp When it was created
-     * @return exists If it exists
-     */
+    * @notice Gets the Creative ID information for a given user
+    * @param user The address to check
+    * @return id The Creative ID string
+    * @return timestamp The registration timestamp
+    * @return exists Whether the Creative ID exists
+    */
     function getCreativeID(address user) external view returns (
         string memory id,
         uint40 timestamp,
         bool exists
     );
-
-    /**
-     * @notice Check if a user has a creative ID
-     * @param user Address to check
-     * @return bool True if user has a creative ID
-     */
-    function hasCreativeID(address user) external view returns (bool);
-
-    /**
-     * @notice Check if a creative ID is already taken
-     * @param creativeId Creative ID to check
-     * @return bool True if creative ID is taken
-     */
-    function isCreativeIDTaken(string calldata creativeId) external view returns (bool);
-
-    /**
-     * @notice Get total number of registered creative IDs
-     * @return uint256 Total number of creative IDs
-     */
-    function getTotalCreativeIDs() external view returns (uint256);
-
-    /**
-     * @notice Get the verification contract address
-     * @return IHitmakrVerification The verification contract interface
-     */
-    function verificationContract() external view returns (address);
 }
