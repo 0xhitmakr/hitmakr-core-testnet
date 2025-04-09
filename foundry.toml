@@ -10,3 +10,10 @@ optimizer_runs = 200
 # If you need additional optimizer settings:
 [profile.default.optimizer_details]
 yul = true                   # Enable Yul optimizer
+
+# Network Configuration
+[profile.default.rpc_endpoints]
+camp_testnet = "https://rpc-campnetwork.xyz"
+
+[profile.default.chains]
+camp_testnet = 325000
