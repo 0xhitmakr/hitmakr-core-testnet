@@ -29,16 +29,31 @@ contract MockControlCenter is AccessControl {
     bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
     bytes32 public constant CREATOR_ROLE = keccak256("CREATOR_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    
+    // Add mapping for verification status
+    mapping(address => bool) public verificationStatus;
+    mapping(address => bool) public isValidDSRC;
 
     constructor(address admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(VERIFIER_ROLE, admin);
         _grantRole(CREATOR_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
+        
+        // Set creator as verified by default
+        verificationStatus[admin] = true;
     }
 
     function HITMAKR_CONTROL_CENTER() external view returns (address) {
         return address(this);
+    }
+    
+    function setVerificationStatus(address user, bool status) external {
+        verificationStatus[user] = status;
+    }
+    
+    function setValidDSRC(address dsrc, bool valid) external {
+        isValidDSRC[dsrc] = valid;
     }
 
     function hasCreatorRole(address account) external view returns (bool) {
@@ -162,9 +177,13 @@ contract TestDSRCScript is Script {
         require(dsrcAddress != address(0), "DSRC address not found in events");
         HitmakrDSRC dsrc = HitmakrDSRC(dsrcAddress);
         console.log("DSRC deployed at:", address(dsrc));
+        
+        // Mark the DSRC as valid in the control center
+        controlCenter.setValidDSRC(dsrcAddress, true);
+        console.log("DSRC marked as valid in control center");
 
         // Deploy HitmakrCollection
-        HitmakrCollection collection = new HitmakrCollection(address(controlCenter));
+        HitmakrCollection collection = new HitmakrCollection(address(controlCenter), address(factory));
         console.log("Collection contract deployed at:", address(collection));
 
         // Create a new collection

@@ -73,7 +73,8 @@ contract DeployScript is Script {
 
         // Deploy HitmakrCollection
         HitmakrCollection collection = new HitmakrCollection(
-            address(verification)
+            address(verification),
+            address(controlCenter)
         );
         console.log("Collection contract deployed at:", address(collection));
 

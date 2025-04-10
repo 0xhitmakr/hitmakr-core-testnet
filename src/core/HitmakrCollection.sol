@@ -84,11 +84,12 @@ contract HitmakrCollection is ReentrancyGuard, Pausable {
     /**
      * @notice Constructor initializes the contract with the verification contract address
      * @param _verificationContract The address of the HitmakrVerification contract
+     * @param _dsrcFactory The address of the HitmakrDSRCFactory contract
      */
-    constructor(address _verificationContract) {
-        if (_verificationContract == address(0)) revert ZeroAddress();
+    constructor(address _verificationContract, address _dsrcFactory) {
+        if (_verificationContract == address(0) || _dsrcFactory == address(0)) revert ZeroAddress();
         verificationContract = IHitmakrVerification(_verificationContract);
-        dsrcFactory = IHitmakrDSRCFactory(verificationContract.HITMAKR_CONTROL_CENTER());
+        dsrcFactory = IHitmakrDSRCFactory(_dsrcFactory);
     }
 
 

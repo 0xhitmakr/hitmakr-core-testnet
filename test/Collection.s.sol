@@ -70,7 +70,7 @@ contract HitmakrCollectionTest is Test {
         verification = new MockVerification(address(controlCenter));
 
         // Create collection contract with the new setup
-        collection = new HitmakrCollection(address(verification));
+        collection = new HitmakrCollection(address(verification), address(controlCenter));
 
         // Setup verification status for users
         vm.startPrank(admin);

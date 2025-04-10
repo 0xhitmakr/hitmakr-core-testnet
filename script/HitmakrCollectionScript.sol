@@ -74,6 +74,7 @@ contract HitmakrCollectionScript is Script {
 
         // 2. Deploy HitmakrCollection with the control center
         HitmakrCollection collection = new HitmakrCollection(
+            address(controlCenter),
             address(controlCenter)
         );
         console.log(" Collection contract deployed at:", address(collection));
