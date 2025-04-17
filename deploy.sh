@@ -31,7 +31,8 @@ echo "Select network to deploy to:"
 echo "1) Camp Testnet"
 echo "2) Sepolia"
 echo "3) Mainnet"
-read -p "Enter choice (1-3): " network_choice
+echo "4) SKALE testnet"
+read -p "Enter choice (1-4): " network_choice
 
 case $network_choice in
     1)
@@ -42,6 +43,9 @@ case $network_choice in
         ;;
     3)
         NETWORK="mainnet"
+        ;;
+    4)
+        NETWORK="skale_testnet"
         ;;
     *)
         echo "Invalid choice"

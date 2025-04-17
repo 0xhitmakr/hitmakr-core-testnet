@@ -92,13 +92,13 @@ contract HitmakrCollection is ReentrancyGuard, Pausable {
         dsrcFactory = IHitmakrDSRCFactory(_dsrcFactory);
     }
 
-
     /**
      * @notice Creates a new collection for a verified creator
      * @param name The name of the collection
      * @param description The description of the collection
      * @param collectionType The type of collection (Album/Mixtape/Pack)
      * @param coverArtUri IPFS URI for the cover art
+     * @return collectionId The ID of the created collection
      */
     function createCollection(
         string calldata name,
@@ -109,12 +109,13 @@ contract HitmakrCollection is ReentrancyGuard, Pausable {
         external
         whenNotPaused
         nonReentrant 
+        returns (uint256 collectionId)
     {
         if (!verificationContract.verificationStatus(msg.sender)) revert UserNotVerified();
         if (bytes(name).length == 0) revert InvalidCollectionName();
         if (bytes(description).length == 0) revert InvalidCollectionDescription();
         
-        uint256 collectionId = totalCollections;
+        collectionId = totalCollections;
         uint40 timestamp = uint40(block.timestamp);
 
         collections[collectionId] = Collection({
@@ -140,6 +141,8 @@ contract HitmakrCollection is ReentrancyGuard, Pausable {
             collectionType,
             timestamp
         );
+        
+        return collectionId;
     }
 
     /**
